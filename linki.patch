@@ -1,0 +1,294 @@
+diff --git a/package/kernel/solution/Makefile b/package/kernel/solution/Makefile
+new file mode 100644
+index 0000000000..1004317b1a
+--- /dev/null
++++ b/package/kernel/solution/Makefile
+@@ -0,0 +1,29 @@
++include $(TOPDIR)/rules.mk
++include $(INCLUDE_DIR)/kernel.mk
++
++PKG_NAME:=solution
++PKG_RELEASE:=1
++
++include $(INCLUDE_DIR)/package.mk
++
++define KernelPackage/solution
++  SUBMENU:=Other modules
++  DEPENDS:=@TARGET_ramips
++  TITLE:=Linki solution char driver
++  AUTOLOAD:=$(call AutoLoad,60,solution)
++  FILES:=$(PKG_BUILD_DIR)/solution.ko
++endef
++
++define KernelPackage/solution/description
++  Example character driver for Linki.
++endef
++
++define Build/Compile
++	$(MAKE) -C "$(LINUX_DIR)" \
++		$(KERNEL_MAKE_FLAGS) \
++		M="$(PKG_BUILD_DIR)" \
++		EXTRA_CFLAGS="$(BUILDFLAGS)" \
++		modules
++endef
++
++$(eval $(call KernelPackage,solution))
+diff --git a/package/kernel/solution/src/Makefile b/package/kernel/solution/src/Makefile
+new file mode 100644
+index 0000000000..ad6a241cec
+--- /dev/null
++++ b/package/kernel/solution/src/Makefile
+@@ -0,0 +1 @@
++obj-m := solution.o
+diff --git a/package/kernel/solution/src/solution.c b/package/kernel/solution/src/solution.c
+new file mode 100644
+index 0000000000..11850e0862
+--- /dev/null
++++ b/package/kernel/solution/src/solution.c
+@@ -0,0 +1,162 @@
++#define pr_fmt(fmt) "[solution]: " fmt
++
++#include <linux/atomic.h>
++#include <linux/cdev.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/init.h>
++#include <linux/kernel.h> /* for sprintf() */
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/types.h>
++#include <linux/uaccess.h> /* for get_user and put_user */
++#include <linux/string.h>
++#include <asm/errno.h>
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("EvMik205");
++MODULE_DESCRIPTION("A sample Linux character driver");
++MODULE_VERSION("0.1");
++
++static int dev_open(struct inode *, struct file *);
++static int dev_release(struct inode *, struct file *);
++static ssize_t dev_read(struct file *, char __user *, size_t, loff_t *);
++static ssize_t dev_write(struct file *, const char __user *, size_t,
++	loff_t *);
++
++#define DEVICE_NAME "solution"
++#define DEVICE_MAJOR 240
++#define BUF_LEN 80
++
++enum {
++    DEV_FREE = 0,
++    DEV_OPENED = 1,
++};
++
++static atomic_t already_open = ATOMIC_INIT(DEV_FREE);
++
++static char msg[BUF_LEN + 1];
++
++static struct class *cls;
++
++static struct file_operations dev_fops = {
++    .read = dev_read,
++    .write = dev_write,
++    .open = dev_open,
++    .release = dev_release,
++};
++
++static int sum = 17;
++
++/** @brief Init module & create character device
++ *  @return Returns 0 on success, error code otherwise.
++ */
++static int __init dev_init(void)
++{
++    int rc;
++
++    rc = register_chrdev(DEVICE_MAJOR, DEVICE_NAME, &dev_fops);
++
++    if (rc < 0) {
++	pr_alert("Registering char device failed with %d\n", rc);
++	return rc;
++    }
++
++    cls = class_create(THIS_MODULE, DEVICE_NAME);
++    device_create(cls, NULL, MKDEV(DEVICE_MAJOR, 0), NULL, DEVICE_NAME);
++
++    pr_info("Created /dev/%s with major number = %d\n", DEVICE_NAME, DEVICE_MAJOR);
++
++    return 0;
++}
++
++/** @brief Cleanup function.
++ */
++static void __exit dev_exit(void)
++{
++    device_destroy(cls, MKDEV(DEVICE_MAJOR, 0));
++    class_destroy(cls);
++
++    unregister_chrdev(DEVICE_MAJOR, DEVICE_NAME);
++}
++
++/** @brief Called when a process tries to open the device file, like
++ *  "sudo cat /dev/chardev". Trying to get lock on device.
++ *  @return On success zero, otherwise -EBUSY
++ *
++ */
++static int dev_open(struct inode *inode, struct file *file)
++{
++    if (atomic_cmpxchg(&already_open, DEV_FREE, DEV_OPENED))
++	return -EBUSY;
++
++    sprintf(msg, "%d", sum);
++    try_module_get(THIS_MODULE);
++
++    return 0;
++}
++
++/** @brief Called when a process closes the device file. Frees dev lock.
++ *  @return 0
++ */
++static int dev_release(struct inode *inode, struct file *file)
++{
++    atomic_set(&already_open, DEV_FREE);
++    module_put(THIS_MODULE);
++
++    return 0;
++}
++
++/** @brief Called on reading from device
++ *  @return 
++ */
++static ssize_t dev_read(struct file *filp,
++			   char __user *buffer,
++			   size_t length,
++			   loff_t *offset)
++{
++    int rc = 0;
++
++    rc = copy_to_user(buffer, msg, strlen(msg));
++
++    if (rc != 0) 
++    {
++	pr_alert("Sent %d bytes failed\n", (int) strlen(msg));
++	return -EFAULT;
++    }
++
++    pr_info("%s\n", msg);
++    
++    return 0;
++}
++
++static ssize_t dev_write(struct file *filp, const char __user *buffer,
++			    size_t len, loff_t *off)
++{
++    int a = 0;
++    int b = 0;
++    int rc;
++
++    rc = copy_from_user(msg, buffer, BUF_LEN);
++    if (rc != 0) {
++	pr_alert("Writing %d bytes failed\n", rc);
++	return -EFAULT;
++    }
++  
++    rc = sscanf(msg, "%d %d", &a, &b);
++    if (rc != 2) {
++	pr_alert("Error reading arguments %d\n", rc);
++	return -EFAULT;
++    }
++
++    sum = a + b;
++    sprintf(msg, "%d", sum);
++    pr_info("Got numbers a=%d, b=%d, sum=%d, msg=%s\n", a, b, sum, msg);
++    
++    return len;
++}
++
++module_init(dev_init);
++module_exit(dev_exit);
++
+diff --git a/target/linux/ramips/dts/mt7621_LinkiModel1.dts b/target/linux/ramips/dts/mt7621_LinkiModel1.dts
+new file mode 100644
+index 0000000000..79a51caac1
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_LinkiModel1.dts
+@@ -0,0 +1,10 @@
++#include "mt7621_zbtlink_zbt-wg3526.dtsi"
++
++/ {
++	compatible = "zbtlink,zbt-wg3526-16m", "zbtlink,zbt-wg3526", "mediatek,mt7621-soc";
++	model = "LinkiModel1";
++};
++
++&firmware {
++	reg = <0x50000 0xfb0000>;
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index 9c451c26bf..bf9500ff3d 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -2246,6 +2246,20 @@ define Device/zbtlink_zbt-wg3526-32m
+ endef
+ TARGET_DEVICES += zbtlink_zbt-wg3526-32m
+ 
++define Device/LinkiModel1
++  $(Device/dsa-migration)
++  $(Device/uimage-lzma-loader)
++  IMAGE_SIZE := 16064k
++  DEVICE_VENDOR := Linki
++  DEVICE_MODEL := Model1
++  DEVICE_VARIANT := 16M
++  DEVICE_PACKAGES := kmod-ata-ahci kmod-sdhci-mt7620 kmod-mt7603 kmod-mt76x2 \
++	kmod-usb3 kmod-usb-ledtrig-usbport
++  SUPPORTED_DEVICES += Model1
++endef
++TARGET_DEVICES += LinkiModel1
++
++
+ define Device/zio_freezio
+   $(Device/dsa-migration)
+   IMAGE_SIZE := 16064k
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+index afd4a3710c..8ee64c5cef 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+@@ -180,6 +180,7 @@ ramips_setup_macs()
+ 	wavlink,wl-wn533a8|\
+ 	winstars,ws-wn583a6|\
+ 	zbtlink,zbt-we1326|\
++	Linki,Model1|\
+ 	zbtlink,zbt-wg3526-16m|\
+ 	zbtlink,zbt-wg3526-32m)
+ 		label_mac=$(mtd_get_mac_binary factory 0x4)
+diff --git a/target/linux/ramips/mt7621/config-5.10 b/target/linux/ramips/mt7621/config-5.10
+index f1308bec7d..acff0ae76c 100644
+--- a/target/linux/ramips/mt7621/config-5.10
++++ b/target/linux/ramips/mt7621/config-5.10
+@@ -25,7 +25,6 @@ CONFIG_CPU_HAS_PREFETCH=y
+ CONFIG_CPU_HAS_RIXI=y
+ CONFIG_CPU_HAS_SYNC=y
+ CONFIG_CPU_IDLE=y
+-# CONFIG_CPU_IDLE_GOV_LADDER is not set
+ CONFIG_CPU_IDLE_GOV_TEO=y
+ CONFIG_CPU_MIPS32=y
+ # CONFIG_CPU_MIPS32_R1 is not set
+@@ -41,7 +40,6 @@ CONFIG_CPU_SUPPORTS_32BIT_KERNEL=y
+ CONFIG_CPU_SUPPORTS_HIGHMEM=y
+ CONFIG_CPU_SUPPORTS_MSA=y
+ CONFIG_CRC16=y
+-CONFIG_CRYPTO_ACOMP2=y
+ CONFIG_CRYPTO_BLAKE2S=y
+ CONFIG_CRYPTO_DEFLATE=y
+ CONFIG_CRYPTO_HASH_INFO=y
+@@ -109,9 +107,8 @@ CONFIG_IRQ_DOMAIN_HIERARCHY=y
+ CONFIG_IRQ_FORCED_THREADING=y
+ CONFIG_IRQ_MIPS_CPU=y
+ CONFIG_IRQ_WORK=y
+-# CONFIG_KERNEL_ZSTD is not set
+-CONFIG_LED_TRIGGER_PHY=y
+ CONFIG_LEDS_UBNT_LEDBAR=y
++CONFIG_LED_TRIGGER_PHY=y
+ CONFIG_LIBFDT=y
+ CONFIG_LOCK_DEBUGGING_SUPPORT=y
+ CONFIG_LZO_COMPRESS=y
